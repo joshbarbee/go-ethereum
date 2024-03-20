@@ -26,9 +26,10 @@ import (
 // Config are the configuration options for the Interpreter
 type Config struct {
 	Tracer                  EVMLogger // Opcode logger
-	NoBaseFee               bool      // Forces the EIP-1559 baseFee to 0 (needed for 0 price calls)
-	EnablePreimageRecording bool      // Enables recording of SHA3/keccak preimages
-	ExtraEips               []int     // Additional EIPS that are to be enabled
+	VandalLogger            VandalLogger
+	NoBaseFee               bool  // Forces the EIP-1559 baseFee to 0 (needed for 0 price calls)
+	EnablePreimageRecording bool  // Enables recording of SHA3/keccak preimages
+	ExtraEips               []int // Additional EIPS that are to be enabled
 }
 
 // ScopeContext contains the things that are per-call, such as stack and memory,
@@ -144,6 +145,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		gasCopy uint64 // for EVMLogger to log gas remaining before execution
 		logged  bool   // deferred EVMLogger should ignore already logged steps
 		res     []byte // result of the opcode execution function
+		out     []byte // output data of the last instruction
 		debug   = in.evm.Config.Tracer != nil
 	)
 	// Don't move this deferred function, it's placed before the capturestate-deferred method,
@@ -227,7 +229,12 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			logged = true
 		}
 		// execute the operation
-		res, err = operation.execute(&pc, in, callContext)
+		res, out, err = operation.execute(&pc, in, callContext)
+
+		if in.evm.Config.VandalLogger != nil {
+			in.evm.Config.VandalLogger.CaptureState(pcCopy, op, gasCopy, cost, out)
+		}
+
 		if err != nil {
 			break
 		}

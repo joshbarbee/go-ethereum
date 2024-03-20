@@ -432,6 +432,12 @@ web3._extend({
 			inputFormatter: [null, null]
 		}),
 		new web3._extend.Method({
+			name: 'traceVandalTransaction',
+			call: 'debug_traceVandalTransaction',
+			params: 2,
+			inputFormatter: [null, null]
+		}),
+		new web3._extend.Method({
 			name: 'traceCall',
 			call: 'debug_traceCall',
 			params: 3,

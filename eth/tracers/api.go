@@ -861,6 +861,46 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
 }
 
+// TraceVandalTransaction returns the structured logs created during the execution of EVM
+// via the Vandal logger
+func (api *API) TraceVandalTransaction(ctx context.Context, hash common.Hash, config *TraceConfig) (interface{}, error) {
+	found, _, blockHash, blockNumber, index, err := api.backend.GetTransaction(ctx, hash)
+	if err != nil {
+		return nil, ethapi.NewTxIndexingError()
+	}
+	// Only mined txes are supported
+	if !found {
+		return nil, errTxNotFound
+	}
+
+	// It shouldn't happen in practice.
+	if blockNumber == 0 {
+		return nil, errors.New("genesis is not traceable")
+	}
+
+	reexec := defaultTraceReexec
+	if config != nil && config.Reexec != nil {
+		reexec = *config.Reexec
+	}
+	block, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(blockNumber), blockHash)
+	if err != nil {
+		return nil, err
+	}
+	msg, vmctx, statedb, release, err := api.backend.StateAtTransaction(ctx, block, int(index), reexec)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	txctx := &Context{
+		BlockHash:   blockHash,
+		BlockNumber: block.Number(),
+		TxIndex:     int(index),
+		TxHash:      hash,
+	}
+	return api.traceVandalTx(ctx, msg, txctx, vmctx, statedb, config)
+}
+
 // TraceCall lets you trace a given eth_call. It collects the structured logs
 // created during the execution of EVM if the given transaction was added on
 // top of the provided block and returns them as a JSON object.
@@ -977,6 +1017,56 @@ func (api *API) traceTx(ctx context.Context, message *core.Message, txctx *Conte
 		return nil, fmt.Errorf("tracing failed: %w", err)
 	}
 	return tracer.GetResult()
+}
+
+// traceVandalTx is a special tracer that is used to trace a tx to be outputted to Vandal. Similar to regular traceTx, but
+// returns Vandal.GetResult()
+func (api *API) traceVandalTx(ctx context.Context, message *core.Message, txctx *Context, vmctx vm.BlockContext, statedb *state.StateDB, config *TraceConfig) (interface{}, error) {
+	var (
+		tracer    Tracer
+		err       error
+		timeout   = defaultTraceTimeout
+		txContext = core.NewEVMTxContext(message)
+	)
+	if config == nil {
+		config = &TraceConfig{}
+	}
+	// Default tracer is the struct logger
+	tracer = logger.NewStructLogger(config.Config)
+	if config.Tracer != nil {
+		tracer, err = DefaultDirectory.New(*config.Tracer, txctx, config.TracerConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	vandalTracer := logger.NewVandalTracer()
+
+	vmenv := vm.NewEVM(vmctx, txContext, statedb, api.backend.ChainConfig(), vm.Config{Tracer: tracer, VandalLogger: vandalTracer, NoBaseFee: true})
+
+	// Define a meaningful timeout of a single transaction trace
+	if config.Timeout != nil {
+		if timeout, err = time.ParseDuration(*config.Timeout); err != nil {
+			return nil, err
+		}
+	}
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+	go func() {
+		<-deadlineCtx.Done()
+		if errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) {
+			tracer.Stop(errors.New("execution timeout"))
+			// Stop evm execution. Note cancellation is not necessarily immediate.
+			vmenv.Cancel()
+		}
+	}()
+	defer cancel()
+
+	// Call Prepare to clear out the statedb access list
+	statedb.SetTxContext(txctx.TxHash, txctx.TxIndex)
+	if _, err = core.ApplyMessage(vmenv, message, new(core.GasPool).AddGas(message.GasLimit)); err != nil {
+		return nil, fmt.Errorf("tracing failed: %w", err)
+	}
+	return vandalTracer.GetResult()
 }
 
 // APIs return the collection of RPC services the tracer package offers.
