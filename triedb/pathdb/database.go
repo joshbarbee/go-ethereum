@@ -34,9 +34,6 @@ import (
 )
 
 const (
-	// maxDiffLayers is the maximum diff layers allowed in the layer tree.
-	maxDiffLayers = 128
-
 	// defaultCleanSize is the default memory allowance of clean cache.
 	defaultCleanSize = 16 * 1024 * 1024
 
@@ -52,6 +49,11 @@ const (
 	// Do not increase the buffer size arbitrarily, otherwise the system
 	// pause time will increase when the database writes happen.
 	DefaultBufferSize = 64 * 1024 * 1024
+)
+
+var (
+	// maxDiffLayers is the maximum diff layers allowed in the layer tree.
+	maxDiffLayers = 128
 )
 
 // layer is the interface implemented by all state layers which includes some
@@ -402,9 +404,6 @@ func (db *Database) Recoverable(root common.Hash) bool {
 	return checkHistories(db.freezer, *id+1, dl.stateID()-*id, func(m *meta) error {
 		if m.parent != root {
 			return errors.New("unexpected state history")
-		}
-		if len(m.incomplete) > 0 {
-			return errors.New("incomplete state history")
 		}
 		root = m.root
 		return nil
